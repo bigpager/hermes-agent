@@ -206,10 +206,14 @@ class GatewayShutdownMixin:
         helper = getattr(getattr(self, "adapters", {}).get(Platform.API_SERVER), name, None)
         return max(0, int(helper(*args))) if callable(helper) else 0
 
+    def _local_wake_work_count(self) -> int:
+        owner = getattr(self, "_local_cron_wake", None)
+        return owner._pending_agent_requests if owner is not None else 0
+
     def _active_api_run_count(self) -> int:
         """API-server work that is outside ``_running_agents``."""
         try:
-            return self._api_server_hook("active_agent_work_count")
+            return self._api_server_hook("active_agent_work_count") + self._local_wake_work_count()
         except Exception:
             return 0
 
@@ -401,7 +405,7 @@ class GatewayShutdownMixin:
         if seen is not None and seen > last_inbound:
             last_inbound = seen
         return is_idle(
-            active_work_count=self._running_agent_count() + cron_count + api_count,
+            active_work_count=self._running_agent_count() + cron_count + api_count + self._local_wake_work_count(),
             seconds_since_last_inbound=time.time() - last_inbound,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
             has_live_background_work=self._scale_to_zero_has_live_background_work(),

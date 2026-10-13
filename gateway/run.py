@@ -5117,9 +5117,17 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        from gateway.status import _get_process_hermes_home, _profile_label_for_home
+        from gateway.local_cron_wake import LocalCronWake
+        _wake_handlers = {}
+        _wake_home = _get_process_hermes_home()
+        if _profile_label_for_home(str(_wake_home)) == "default":
+            runner._local_cron_wake = LocalCronWake(runner, _wake_home, _main_loop)
+            _wake_handlers["wake-generic-intake"] = runner._local_cron_wake.handle
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
+                           **_wake_handlers,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner)})
         if not await _control_server.start():
             _control_server = None

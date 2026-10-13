@@ -198,7 +198,7 @@ class GatewayControlServer:
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
 
-    def handle_request_line(self, raw: bytes) -> bytes:
+    def handle_request_line(self, raw: bytes, peer_uid: Optional[int] = None) -> bytes:
         """One JSON request line -> one JSON response line. Never raises (shared by POSIX + pipe)."""
         request_id: Any = None
         try:
@@ -206,6 +206,11 @@ class GatewayControlServer:
             if not isinstance(request, dict):
                 raise ValueError("request must be a JSON object")
             request_id, verb = request.get("id"), request.get("verb")
+            if verb == "wake-generic-intake":
+                if _IS_WINDOWS or peer_uid is None or peer_uid != os.getuid():
+                    raise ValueError("same-account Unix peer required")
+                if request.get("params") not in (None, {}):
+                    raise ValueError("fixed wake accepts no parameters")
             handler = self._handlers.get(verb) if isinstance(verb, str) else None
             if handler is None:
                 response: dict[str, Any] = {"ok": False, "error": f"unknown verb: {verb!r}",
@@ -237,7 +242,8 @@ class GatewayControlServer:
             # Handlers read disk; keep that off the loop that drives every platform
             # adapter so a fast-polling consumer can't stall heartbeats.
             response = await asyncio.get_running_loop().run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n"))
+                None, self.handle_request_line, raw.rstrip(b"\n"),
+                _unix_peer_uid(writer.get_extra_info("socket")))
             writer.write(response)
             await writer.drain()
         except (asyncio.TimeoutError, ConnectionError, OSError):
@@ -247,6 +253,23 @@ class GatewayControlServer:
         finally:
             with contextlib.suppress(Exception):
                 writer.close()
+
+
+def _unix_peer_uid(sock) -> Optional[int]:
+    """Kernel peer identity, fail closed where unavailable; never trust request JSON."""
+    try:
+        if sys.platform == "darwin":
+            import ctypes
+            uid, gid = ctypes.c_uint(), ctypes.c_uint()
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.getpeereid(sock.fileno(), ctypes.byref(uid), ctypes.byref(gid)) == 0:
+                return uid.value
+        elif hasattr(socket, "SO_PEERCRED"):
+            import struct
+            return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+    except (OSError, AttributeError):
+        return None
+    return None
 
 
 class _PipeControlProtocol(asyncio.Protocol):
